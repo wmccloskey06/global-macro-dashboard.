@@ -48,22 +48,17 @@ def fred_index(series_id):
 
     return series.asfreq("MS")
 
-
 @st.cache_data(ttl=21600)
 def oecd_inflation(transformation):
     url = (
         "https://sdmx.oecd.org/public/rest/data/"
         "OECD.SDD.TPS,DSD_PRICES@DF_PRICES_ALL,1.0/"
-        "GBR+AUS+CHN.M.N.CPI.PA._T.N."
-        f"{transformation}"
+        "GBR+AUS+CHN.M.N.CPI.IX._T.N._Z"
     )
 
     response = requests.get(
         url,
-        params={
-            "startPeriod": "2009-01",
-            "dimensionAtObservation": "AllDimensions"
-        },
+        params={"startPeriod": "2009-01"},
         headers={"Accept": "text/csv"},
         timeout=60
     )
@@ -71,16 +66,40 @@ def oecd_inflation(transformation):
     response.raise_for_status()
     df = pd.read_csv(StringIO(response.text))
 
-    df["Economy"] = df["REF_AREA"].map(COUNTRIES)
-    df["Date"] = pd.to_datetime(df["TIME_PERIOD"])
-    df["Inflation (%)"] = pd.to_numeric(
-        df["OBS_VALUE"], errors="coerce"
-    )
-    df["Source"] = "OECD"
+    periods = 12 if transformation == "GY" else 1
+    frames = []
 
-    return df[[
-        "Economy", "Date", "Inflation (%)", "Source"
-    ]].dropna()
+    for code in ["GBR", "AUS", "CHN"]:
+        data = df[df["REF_AREA"] == code].copy()
+
+        if data.empty:
+            continue
+
+        data["Date"] = pd.to_datetime(data["TIME_PERIOD"])
+        data["CPI"] = pd.to_numeric(
+            data["OBS_VALUE"], errors="coerce"
+        )
+
+        index = data.set_index("Date")["CPI"]
+        index = index.sort_index().asfreq("MS")
+
+        inflation = index.pct_change(
+            periods, fill_method=None
+        ) * 100
+
+        result = pd.DataFrame({
+            "Date": inflation.index,
+            "Inflation (%)": inflation.values,
+            "Economy": COUNTRIES[code],
+            "Source": "OECD CPI Index"
+        })
+
+        frames.append(result.dropna())
+
+    if not frames:
+        raise ValueError("OECD CPI data unavailable")
+
+    return pd.concat(frames, ignore_index=True)
 
 
 @st.cache_data(ttl=21600)
